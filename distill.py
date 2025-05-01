@@ -134,4 +134,4 @@ trainer = DistillTrainer(
 trainer.train()
 trainer.save_model(f"{OUTPUT_DIR}/final_student")
 tokenizer.save_pretrained(f"{OUTPUT_DIR}/final_student")
-print("✅ 三分類蒸餾完成，模型已存至：", f"{OUTPUT_DIR}/final_student")
+print("完成，模型已存至：", f"{OUTPUT_DIR}/final_student")
