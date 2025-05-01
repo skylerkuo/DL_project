@@ -91,4 +91,4 @@ trainer.train()
 trainer.save_model(f"{TEACHER_OUTPUT_DIR}/final_teacher")
 tokenizer.save_pretrained(f"{TEACHER_OUTPUT_DIR}/final_teacher")
 
-print("✅ Teacher 訓練完成，存到：", f"{TEACHER_OUTPUT_DIR}/final_teacher")
+print("訓練完成，存到：", f"{TEACHER_OUTPUT_DIR}/final_teacher")
