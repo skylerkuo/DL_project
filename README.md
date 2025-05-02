@@ -1,4 +1,4 @@
-# RL_project
+# DL_project
 
 先跑train_teacher.py
 
