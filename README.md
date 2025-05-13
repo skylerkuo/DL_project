@@ -6,6 +6,8 @@ BERT 部份:
 
 再跑 distill.py
 
+Bert的所有模型都能夠用test.py 測試效果
+
 
 
 LLM 部份:
