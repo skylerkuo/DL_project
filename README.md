@@ -2,7 +2,7 @@
 
 BERT 部份:
 
-先跑#train_teacher.py
+先跑 train_teacher.py
 
 再跑 distill.py
 
