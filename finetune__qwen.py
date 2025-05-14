@@ -45,7 +45,7 @@ def tokenize_fn(example):
     inputs['labels'] = labels['input_ids']
     return inputs
 
-train_data = raw_ds['train'].select(range(10000)).map(tokenize_fn, batched=False)
+train_data = raw_ds['train'].select(range(1000)).map(tokenize_fn, batched=False)
 test_data  = raw_ds['test'].map(tokenize_fn, batched=False)
 
 model.gradient_checkpointing_enable()
@@ -83,15 +83,16 @@ trainer = SFTTrainer(
     peft_config=lora_config,
     args=transformers.TrainingArguments(
         output_dir="outputs",
-        per_device_train_batch_size=1,
+        per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         warmup_steps=3,
-        max_steps=200,
+        max_steps=300,
         learning_rate=1e-4,
         logging_steps=10,
         optim="paged_adamw_8bit",
         report_to="none",
-        save_strategy="epoch"
+        save_strategy="steps",
+        save_steps=50
     ),
     data_collator=transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
 )
