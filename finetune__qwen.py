@@ -26,7 +26,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 
 raw_ds = load_dataset("sentiment140")
-raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4])
+raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4]).shuffle(seed=42)
 
 print(raw_ds["train"].column_names)
 for i in range(3):
@@ -34,9 +34,12 @@ for i in range(3):
 
 print(Counter(raw_ds["train"]["sentiment"]))
 
-
 def formatting_func(example):
-    return f"""You are a helpful assistant. you need to tell me the following sentence is positive or negative, only reply with positive or negative.sentence:{example['text']}. """
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant. you need to tell me the following is positive or negative, only reply with positive or negative."},
+        {"role": "user", "content": example["text"]}
+    ]
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 def tokenize_fn(example):
     prompt = formatting_func(example)
@@ -45,7 +48,7 @@ def tokenize_fn(example):
     inputs['labels'] = labels['input_ids']
     return inputs
 
-train_data = raw_ds['train'].select(range(1000)).map(tokenize_fn, batched=False)
+train_data = raw_ds['train'].select(range(1500)).map(tokenize_fn, batched=False)
 test_data  = raw_ds['test'].map(tokenize_fn, batched=False)
 
 model.gradient_checkpointing_enable()
@@ -86,7 +89,7 @@ trainer = SFTTrainer(
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         warmup_steps=3,
-        max_steps=300,
+        max_steps=500,
         learning_rate=1e-4,
         logging_steps=10,
         optim="paged_adamw_8bit",
