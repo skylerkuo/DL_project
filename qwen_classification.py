@@ -1,53 +1,47 @@
-import json
-from datasets import Dataset
 import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, BitsAndBytesConfig
+from datasets import load_dataset
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-import torch
+model_name = "qwen_finetune_v1"
 
-nf4_config = BitsAndBytesConfig(
+bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
     bnb_4bit_use_double_quant=True,
     bnb_4bit_compute_dtype=torch.float16
 )
 
-model_name = "Qwen/Qwen2.5-7B-Instruct"
-
-model = AutoModelForCausalLM.from_pretrained(
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+model = AutoModelForSequenceClassification.from_pretrained(
     model_name,
-    quantization_config=nf4_config,
+    quantization_config=bnb_config,
     device_map="auto",
+    trust_remote_code=True
 ).eval()
 
-model = torch.compile(model)
+raw_ds = load_dataset("sentiment140")
+raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4]).shuffle(seed=42)
+test_ds = raw_ds["train"].select(range(200))
 
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-def llm_reply(prompt):
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant. you need to tell me the following is positive or negative, only reply with positive or negative."},
-        {"role": "user", "content": prompt}
-    ]
-
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-    model_inputs = tokenizer(text, return_tensors="pt").to(model.device)
-
+def classify_sentiment(text):
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128).to(model.device)
     with torch.no_grad():
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=100,
-            pad_token_id=tokenizer.eos_token_id
-        )
+        logits = model(**inputs).logits
+    pred = torch.argmax(logits, dim=-1).item()
+    return "positive" if pred == 1 else "negative", pred
 
-    output_ids = generated_ids[0][model_inputs["input_ids"].shape[1]:]
-    response = tokenizer.decode(output_ids, skip_special_tokens=True)
-    return response
+correct = 0
+for i in range(len(test_ds)):
+    prompt = test_ds[i]["text"]
+    label = "positive" if test_ds[i]["sentiment"] == 4 else "negative"
 
-ans = llm_reply("you are a good person!")
-print(ans)
+    pred_str, pred_id = classify_sentiment(prompt)
+
+    print(f"TEXT: {prompt}")
+    print(f"ANSWER: {label} | LLM: {pred_str}")
+    print("-" * 40)
+
+    if pred_str == label:
+        correct += 1
+
+print(f"Accuracy: {correct / len(test_ds):.2%}")
