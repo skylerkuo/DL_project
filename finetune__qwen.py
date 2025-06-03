@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from datasets import load_dataset, Dataset
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
-from trl import SFTTrainer
-import transformers
-import pandas as pd
-from collections import Counter
+from datasets import load_dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+    DataCollatorWithPadding,
+    BitsAndBytesConfig
+)
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+import evaluate
+
+model_id = "Qwen/Qwen2.5-1.5B"
 
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -15,89 +21,76 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.bfloat16
 )
 
-model_id = "Qwen/Qwen2.5-0.5B-Instruct"
-model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    quantization_config=bnb_config,
-    device_map={"": 0},
-    trust_remote_code=True
-)
 tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-tokenizer.pad_token = tokenizer.eos_token
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_id,
+    num_labels=2,
+    trust_remote_code=True,
+    quantization_config=bnb_config,
+    device_map="auto"
+)
 
-raw_ds = load_dataset("sentiment140")
-raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4]).shuffle(seed=42)
-
-print(raw_ds["train"].column_names)
-for i in range(3):
-    print(raw_ds["train"][i])
-
-print(Counter(raw_ds["train"]["sentiment"]))
-
-def formatting_func(example):
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant. you need to tell me the following is positive or negative, only reply with positive or negative."},
-        {"role": "user", "content": example["text"]}
-    ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-def tokenize_fn(example):
-    prompt = formatting_func(example)
-    inputs = tokenizer(prompt, truncation=True, padding='max_length', max_length=200)
-    labels = tokenizer("positive" if example['sentiment'] == 4 else "negative", truncation=True, padding='max_length', max_length=80)
-    inputs['labels'] = labels['input_ids']
-    return inputs
-
-train_data = raw_ds['train'].select(range(1500)).map(tokenize_fn, batched=False)
-test_data  = raw_ds['test'].map(tokenize_fn, batched=False)
-
-model.gradient_checkpointing_enable()
 model = prepare_model_for_kbit_training(model)
-import bitsandbytes as bnb
-
-def find_all_linear_names(m):
-    cls = bnb.nn.Linear4bit
-    names = set()
-    for n, module in m.named_modules():
-        if isinstance(module, cls):
-            parts = n.split('.')
-            names.add(parts[-1])
-    if 'lm_head' in names:
-        names.remove('lm_head')
-    return list(names)
-
-lora_targets = find_all_linear_names(model)
 
 lora_config = LoraConfig(
-    r=64,
+    r=16,
     lora_alpha=32,
-    target_modules=lora_targets,
-    lora_dropout=0.05,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "dense"],
+    lora_dropout=0.1,
     bias="none",
-    task_type="CAUSAL_LM"
+    task_type="SEQ_CLS"
 )
 model = get_peft_model(model, lora_config)
 
-trainer = SFTTrainer(
-    model=model,
-    train_dataset=train_data,
-    eval_dataset=test_data,
-    formatting_func=formatting_func,
-    peft_config=lora_config,
-    args=transformers.TrainingArguments(
-        output_dir="outputs",
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
-        warmup_steps=3,
-        max_steps=500,
-        learning_rate=1e-4,
-        logging_steps=10,
-        optim="paged_adamw_8bit",
-        report_to="none",
-        save_strategy="steps",
-        save_steps=50
-    ),
-    data_collator=transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
+raw_ds = load_dataset("sentiment140")
+raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4])
+
+def preprocess(example):
+    tokenized = tokenizer(
+        example["text"],
+        truncation=True,
+        padding="max_length",
+        max_length=128
+    )
+    tokenized["label"] = 1 if example["sentiment"] == 4 else 0
+    return tokenized
+
+tokenized_ds = raw_ds.map(preprocess, remove_columns=["date", "query", "user", "text", "sentiment"])
+train_ds = tokenized_ds["train"].shuffle(seed=42).select(range(50000))
+eval_ds  = tokenized_ds["test"].shuffle(seed=42)
+acc_metric = evaluate.load("accuracy")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = torch.argmax(torch.tensor(logits), dim=-1)
+    return acc_metric.compute(predictions=preds, references=labels)
+
+training_args = TrainingArguments(
+    output_dir="qwen_lora_seqcls",
+    per_device_train_batch_size=1,
+    per_device_eval_batch_size=1,
+    gradient_accumulation_steps=2,
+    learning_rate=2e-5,
+    logging_steps=10,
+    eval_steps=200,
+    save_steps=200,
+    max_steps=20000,
+    logging_dir="logs"
 )
-model.config.use_cache = False
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_ds,
+    eval_dataset=eval_ds,
+    tokenizer=tokenizer,
+    data_collator=DataCollatorWithPadding(tokenizer),
+    compute_metrics=compute_metrics
+)
+
 trainer.train()
+
+model.save_pretrained("qwen_lora/final")
+tokenizer.save_pretrained("qwen_lora/final")
