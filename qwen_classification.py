@@ -1,47 +1,52 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, BitsAndBytesConfig
+import time
 from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-model_name = "qwen_finetune_v1"
+model_path = "Qwen/Qwen2.5-1.5B" #模型路徑自己換
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
 
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_compute_dtype=torch.float16
-)
-
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-model = AutoModelForSequenceClassification.from_pretrained(
-    model_name,
-    quantization_config=bnb_config,
-    device_map="auto",
-    trust_remote_code=True
-).eval()
+model = AutoModelForSequenceClassification.from_pretrained(model_path, device_map="cuda").eval()
 
 raw_ds = load_dataset("sentiment140")
-raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4]).shuffle(seed=42)
-test_ds = raw_ds["train"].select(range(200))
+raw_ds = raw_ds.filter(lambda x: x["sentiment"] in [0, 4])
 
-def classify_sentiment(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128).to(model.device)
-    with torch.no_grad():
-        logits = model(**inputs).logits
-    pred = torch.argmax(logits, dim=-1).item()
-    return "positive" if pred == 1 else "negative", pred
+def preprocess(example):
+    tokenized = tokenizer(
+        example["text"],
+        truncation=True,
+        padding="max_length",
+        max_length=128
+    )
+    tokenized["label"] = 1 if example["sentiment"] == 4 else 0
+    return tokenized
+
+tokenized_ds = raw_ds.map(preprocess, remove_columns=["date", "query", "user", "text", "sentiment"])
+test_ds = tokenized_ds["train"].shuffle(seed=32).select(range(10000))
 
 correct = 0
+start_time = time.time()
+
 for i in range(len(test_ds)):
-    prompt = test_ds[i]["text"]
-    label = "positive" if test_ds[i]["sentiment"] == 4 else "negative"
+    input_ids = torch.tensor(test_ds[i]["input_ids"]).unsqueeze(0).to(model.device)
+    attention_mask = torch.tensor(test_ds[i]["attention_mask"]).unsqueeze(0).to(model.device)
+    label = test_ds[i]["label"]
 
-    pred_str, pred_id = classify_sentiment(prompt)
+    with torch.no_grad():
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+        pred = torch.argmax(logits, dim=-1).item()
 
-    print(f"TEXT: {prompt}")
-    print(f"ANSWER: {label} | LLM: {pred_str}")
-    print("-" * 40)
-
-    if pred_str == label:
+    if pred == label:
         correct += 1
 
-print(f"Accuracy: {correct / len(test_ds):.2%}")
+    print(f"[{i+1}/{len(test_ds)}]  GT: {label}  Pred: {pred}")
+
+end_time = time.time()
+total_time = end_time - start_time
+avg_time = total_time / len(test_ds)
+
+print(f"Accuracy : {correct / len(test_ds):.2%}")
+print(f"Total inference time: {total_time:.2f} seconds")
+print(f"Avg. time per sample: {avg_time * 1000:.2f} ms")
