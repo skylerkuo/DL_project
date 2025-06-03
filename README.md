@@ -12,8 +12,8 @@ Bert的所有模型都能夠用test.py 測試效果
 
 LLM 部份:
 
-qwen_classification.py: 用qwen做分類的範例程式 測試的次數和模型可以自己改
-
 finetune__qwen.py: 用情感分類的資料並使用QLORA去微調qwen
 
-combine_qwen.py: 將用finetune__qwen.py訓練好的adapter和模型本體合併成一個完整的模型 合併之後可以再用qwen_classification.py去測試 只需修改qwen_classification.py的模型名稱
+qwen_classification.py: 測試個模型的表現
+
+distrill_qwen.py: 蒸餾語言模型
